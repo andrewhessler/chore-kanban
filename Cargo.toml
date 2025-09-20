@@ -1,0 +1,12 @@
+[package]
+name = "chore-kanban"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.100"
+axum = "0.8.4"
+serde = { version = "1.0.225", features = ["derive"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite"] }
+tokio = { version = "1.47.1", features = ["full"] }
+tracing = "0.1.41"
