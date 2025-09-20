@@ -1,10 +1,11 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite, SqlitePool, sqlite::SqliteConnectOptions};
 use std::net::SocketAddr;
@@ -36,6 +37,9 @@ async fn main() -> anyhow::Result<()> {
     let addr = listener.local_addr()?;
 
     let app = Router::new()
+        .route("/", get(index_handler))
+        .route("/index.html", get(index_handler))
+        .route("/assets/{*file}", get(static_handler))
         .route("/get-chores", get(get_chores_handler))
         .route("/{id}/mark-complete", post(mark_complete_handler))
         .with_state(connection_pool);
@@ -45,6 +49,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn index_handler() -> impl IntoResponse {
+    static_handler("/index.html".parse::<Uri>().unwrap()).await
+}
+
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/').to_string();
+
+    StaticFile(path)
+}
+
 async fn get_chores_handler(
     State(pool): State<Pool<Sqlite>>,
 ) -> Result<Json<ChoreResponse>, AppError> {
@@ -52,25 +66,42 @@ async fn get_chores_handler(
     Ok(Json(ChoreResponse { chores }))
 }
 
+#[derive(Deserialize, Clone)]
+pub struct MarkCompleteRequest {
+    pub clear_ticket: bool,
+}
+
 async fn mark_complete_handler(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
+    Json(request): Json<MarkCompleteRequest>,
 ) -> Result<Json<ChoreResponse>, AppError> {
-    mark_complete(&id, &pool).await?;
+    mark_complete(&id, &pool, request.clear_ticket).await?;
 
     let chores = get_chores(&pool).await?;
     Ok(Json(ChoreResponse { chores }))
 }
 
-async fn mark_complete(chore_id: &str, pool: &Pool<Sqlite>) -> anyhow::Result<()> {
-    sqlx::query!(
-        r"
-        UPDATE chores SET last_completed_at = unixepoch() WHERE id = ?1
+async fn mark_complete(chore_id: &str, pool: &Pool<Sqlite>, clear: bool) -> anyhow::Result<()> {
+    if clear {
+        sqlx::query!(
+            r"
+        UPDATE chores SET last_completed_at = NULL WHERE id = ?1
         ",
-        chore_id
-    )
-    .execute(pool)
-    .await?;
+            chore_id
+        )
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query!(
+            r"
+            UPDATE chores SET last_completed_at = unixepoch() WHERE id = ?1
+            ",
+            chore_id
+        )
+        .execute(pool)
+        .await?;
+    }
 
     Ok(())
 }
@@ -113,5 +144,28 @@ where
 {
     fn from(err: E) -> Self {
         Self(err.into())
+    }
+}
+
+#[derive(Embed)]
+#[folder = "src/client/dist/"]
+struct Asset;
+
+pub struct StaticFile<T>(pub T);
+
+impl<T> IntoResponse for StaticFile<T>
+where
+    T: Into<String>,
+{
+    fn into_response(self) -> Response {
+        let path = self.0.into();
+
+        match Asset::get(path.as_str()) {
+            Some(content) => {
+                let mime = mime_guess::from_path(path).first_or_octet_stream();
+                ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            }
+            None => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
+        }
     }
 }
