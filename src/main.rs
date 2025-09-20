@@ -1,21 +1,20 @@
 use axum::{
     Json, Router,
-    extract::Path,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
-use std::{net::SocketAddr, time::SystemTime};
+use sqlx::{Pool, Sqlite, SqlitePool, sqlite::SqliteConnectOptions};
+use std::net::SocketAddr;
 
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
 struct Chore {
     id: usize,
     chore_name: String,
     frequency: Option<usize>,
-    last_completed_at: Option<SystemTime>,
+    last_completed_at: Option<usize>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
@@ -36,15 +35,64 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let addr = listener.local_addr()?;
 
-    let app = Router::new().route("/{id}/mark-complete", post(mark_complete));
+    let app = Router::new()
+        .route("/get-chores", get(get_chores_handler))
+        .route("/{id}/mark-complete", post(mark_complete_handler))
+        .with_state(connection_pool);
 
     println!("listening on {addr}");
     _ = axum::serve(listener, app).await;
     Ok(())
 }
 
-async fn mark_complete(Path(id): Path<String>) -> Result<Json<ChoreResponse>, AppError> {
-    Ok(Json(ChoreResponse { chores: vec![] }))
+async fn get_chores_handler(
+    State(pool): State<Pool<Sqlite>>,
+) -> Result<Json<ChoreResponse>, AppError> {
+    let chores = get_chores(&pool).await?;
+    Ok(Json(ChoreResponse { chores }))
+}
+
+async fn mark_complete_handler(
+    State(pool): State<Pool<Sqlite>>,
+    Path(id): Path<String>,
+) -> Result<Json<ChoreResponse>, AppError> {
+    mark_complete(&id, &pool).await?;
+
+    let chores = get_chores(&pool).await?;
+    Ok(Json(ChoreResponse { chores }))
+}
+
+async fn mark_complete(chore_id: &str, pool: &Pool<Sqlite>) -> anyhow::Result<()> {
+    sqlx::query!(
+        r"
+        UPDATE chores SET last_completed_at = unixepoch() WHERE id = ?1
+        ",
+        chore_id
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+async fn get_chores(pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Chore>> {
+    let records = sqlx::query!(
+        r"
+        SELECT * FROM chores
+        ",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(records
+        .iter()
+        .map(|record| Chore {
+            id: record.id as usize,
+            chore_name: record.display_name.clone(),
+            frequency: record.frequency_hours.map(|val| val as usize),
+            last_completed_at: record.last_completed_at.map(|val| val as usize),
+        })
+        .collect())
 }
 
 pub struct AppError(anyhow::Error);
