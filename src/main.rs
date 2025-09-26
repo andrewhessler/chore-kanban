@@ -5,17 +5,21 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use chrono::Utc;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite, SqlitePool, sqlite::SqliteConnectOptions};
 use std::net::SocketAddr;
 
+const SECS_IN_DAY: u64 = 60 * 60 * 24;
+
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
 struct Chore {
-    id: usize,
+    id: i64,
     chore_name: String,
-    frequency: Option<usize>,
-    last_completed_at: Option<usize>,
+    overdue: bool,
+    days_until_overdue: Option<f64>,
+    last_completed_at: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
@@ -23,14 +27,19 @@ struct ChoreResponse {
     chores: Vec<Chore>,
 }
 
+#[derive(Clone, Debug)]
+struct AppState {
+    pub pool: Pool<Sqlite>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let connection_options = SqliteConnectOptions::new()
         .filename("chores")
         .create_if_missing(true);
-    let connection_pool = SqlitePool::connect_with(connection_options).await?;
+    let pool = SqlitePool::connect_with(connection_options).await?;
 
-    sqlx::migrate!("./migrations").run(&connection_pool).await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8081));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -41,8 +50,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/index.html", get(index_handler))
         .route("/assets/{*file}", get(static_handler))
         .route("/get-chores", get(get_chores_handler))
-        .route("/{id}/mark-complete", post(mark_complete_handler))
-        .with_state(connection_pool);
+        .route("/{id}/toggle-chore", post(toggle_chore_handler))
+        .with_state(AppState { pool });
 
     println!("listening on {addr}");
     _ = axum::serve(listener, app).await;
@@ -60,54 +69,54 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 }
 
 async fn get_chores_handler(
-    State(pool): State<Pool<Sqlite>>,
+    State(state): State<AppState>,
 ) -> Result<Json<ChoreResponse>, AppError> {
-    let chores = get_chores(&pool).await?;
+    let chores = get_chores(&state.pool).await?;
     Ok(Json(ChoreResponse { chores }))
 }
 
-#[derive(Deserialize, Clone)]
-pub struct MarkCompleteRequest {
-    pub clear_ticket: bool,
-}
-
-async fn mark_complete_handler(
-    State(pool): State<Pool<Sqlite>>,
+async fn toggle_chore_handler(
+    State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(request): Json<MarkCompleteRequest>,
 ) -> Result<Json<ChoreResponse>, AppError> {
-    mark_complete(&id, &pool, request.clear_ticket).await?;
-
-    let chores = get_chores(&pool).await?;
-    Ok(Json(ChoreResponse { chores }))
-}
-
-async fn mark_complete(chore_id: &str, pool: &Pool<Sqlite>, clear: bool) -> anyhow::Result<()> {
-    if clear {
-        sqlx::query!(
-            r"
-        UPDATE chores SET last_completed_at = NULL WHERE id = ?1
-        ",
-            chore_id
-        )
-        .execute(pool)
-        .await?;
-    } else {
+    let chore = get_chore_by_id(&id, &state.pool).await?;
+    if chore.overdue {
+        // if overdue, update completed_at
         sqlx::query!(
             r"
             UPDATE chores SET last_completed_at = unixepoch() WHERE id = ?1
             ",
-            chore_id
+            id
         )
-        .execute(pool)
+        .execute(&state.pool)
+        .await?;
+    } else {
+        // if not overdue, null completed_at so it's overdue
+        sqlx::query!(
+            r"
+            UPDATE chores SET last_completed_at = NULL WHERE id = ?1
+            ",
+            id
+        )
+        .execute(&state.pool)
         .await?;
     }
 
-    Ok(())
+    let chores = get_chores(&state.pool).await?;
+    Ok(Json(ChoreResponse { chores }))
+}
+
+#[derive(sqlx::FromRow)]
+struct ChoreRow {
+    id: i64,
+    display_name: String,
+    frequency_hours: Option<i64>,
+    last_completed_at: Option<i64>,
 }
 
 async fn get_chores(pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Chore>> {
-    let records = sqlx::query!(
+    let records = sqlx::query_as!(
+        ChoreRow,
         r"
         SELECT * FROM chores
         ",
@@ -117,13 +126,61 @@ async fn get_chores(pool: &Pool<Sqlite>) -> anyhow::Result<Vec<Chore>> {
 
     Ok(records
         .iter()
-        .map(|record| Chore {
-            id: record.id as usize,
-            chore_name: record.display_name.clone(),
-            frequency: record.frequency_hours.map(|val| val as usize),
-            last_completed_at: record.last_completed_at.map(|val| val as usize),
-        })
+        .map(|record| map_record_to_chore(record))
         .collect())
+}
+
+async fn get_chore_by_id(id: &str, pool: &Pool<Sqlite>) -> anyhow::Result<Chore> {
+    let record = sqlx::query_as!(
+        ChoreRow,
+        r"
+        SELECT * FROM chores WHERE id = ?
+        ",
+        id
+    )
+    .fetch_one(pool)
+    .await?;
+
+    return Ok(map_record_to_chore(&record));
+}
+
+fn map_record_to_chore(record: &ChoreRow) -> Chore {
+    let freq_in_days: Option<f64> = if let Some(freq) = record.frequency_hours {
+        Some(freq as f64 / 24.)
+    } else {
+        None
+    };
+
+    let days_since_last_complete: Option<f64> = if let Some(last) = record.last_completed_at {
+        let now_secs = Utc::now().timestamp_millis();
+        Some(((now_secs / 1000) - last) as f64 / SECS_IN_DAY as f64)
+    } else {
+        None
+    };
+
+    let overdue_by_freq = if let (Some(days), Some(freq)) = (days_since_last_complete, freq_in_days)
+    {
+        days > freq
+    } else {
+        false
+    };
+
+    let overdue = record.last_completed_at.is_none() || overdue_by_freq;
+
+    let days_until_overdue =
+        if let (Some(days), Some(freq)) = (days_since_last_complete, freq_in_days) {
+            Some(freq - days)
+        } else {
+            None
+        };
+
+    Chore {
+        id: record.id,
+        chore_name: record.display_name.clone(),
+        days_until_overdue,
+        overdue,
+        last_completed_at: record.last_completed_at.map(|v| v as u64),
+    }
 }
 
 pub struct AppError(anyhow::Error);
