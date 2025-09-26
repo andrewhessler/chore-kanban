@@ -6,10 +6,11 @@ use axum::{
     routing::{get, post},
 };
 use chrono::Utc;
+use dotenvy::dotenv;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite, SqlitePool, sqlite::SqliteConnectOptions};
-use std::net::SocketAddr;
+use std::{env, net::SocketAddr};
 
 const SECS_IN_DAY: u64 = 60 * 60 * 24;
 
@@ -18,8 +19,10 @@ struct Chore {
     id: i64,
     chore_name: String,
     overdue: bool,
+    on_cadence: bool,
     days_until_overdue: Option<f64>,
-    last_completed_at: Option<u64>,
+    freq_secs: Option<i64>,
+    last_completed_at: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
@@ -34,8 +37,12 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenv()?;
+    let raw_database_url = env::var("DATABASE_URL").expect("DATABASE_URL to be defined");
+    let database_url = raw_database_url.split(":").last().unwrap();
+
     let connection_options = SqliteConnectOptions::new()
-        .filename("chores")
+        .filename(database_url)
         .create_if_missing(true);
     let pool = SqlitePool::connect_with(connection_options).await?;
 
@@ -80,22 +87,60 @@ async fn toggle_chore_handler(
     Path(id): Path<String>,
 ) -> Result<Json<ChoreResponse>, AppError> {
     let chore = get_chore_by_id(&id, &state.pool).await?;
+    let now = Utc::now().timestamp();
+
     if chore.overdue {
+        let last_completed_at = if chore.on_cadence {
+            let freq_secs = chore
+                .freq_secs
+                .expect("A chore on a cadence must have a frequency");
+
+            let mut new_last_completed_at = chore
+                .last_completed_at
+                .expect("A chore on a cadence must have a last_completed_at");
+
+            while new_last_completed_at < now - freq_secs {
+                new_last_completed_at += freq_secs
+            }
+            new_last_completed_at
+        } else {
+            now
+        };
         // if overdue, update completed_at
         sqlx::query!(
             r"
-            UPDATE chores SET last_completed_at = unixepoch() WHERE id = ?1
+            UPDATE chores SET last_completed_at = ?1 WHERE id = ?2
             ",
+            last_completed_at,
             id
         )
         .execute(&state.pool)
         .await?;
     } else {
-        // if not overdue, null completed_at so it's overdue
+        let last_completed_at: Option<i64> = if chore.on_cadence {
+            let freq_secs = chore
+                .freq_secs
+                .expect("A chore on a cadence must have a frequency");
+
+            let existing_last_completed_at = chore
+                .last_completed_at
+                .expect("A chore on a cadence must have a last_completed_at");
+
+            let mut new_last_completed_at = existing_last_completed_at;
+
+            while new_last_completed_at > now - freq_secs {
+                new_last_completed_at -= freq_secs
+            }
+            Some(new_last_completed_at)
+        } else {
+            None
+        };
+        // if not overdue, null or revert completed_at so it's overdue
         sqlx::query!(
             r"
-            UPDATE chores SET last_completed_at = NULL WHERE id = ?1
+            UPDATE chores SET last_completed_at = ?1 WHERE id = ?2
             ",
+            last_completed_at,
             id
         )
         .execute(&state.pool)
@@ -106,11 +151,12 @@ async fn toggle_chore_handler(
     Ok(Json(ChoreResponse { chores }))
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Debug)]
 struct ChoreRow {
     id: i64,
     display_name: String,
     frequency_hours: Option<i64>,
+    on_cadence: i64,
     last_completed_at: Option<i64>,
 }
 
@@ -152,8 +198,8 @@ fn map_record_to_chore(record: &ChoreRow) -> Chore {
     };
 
     let days_since_last_complete: Option<f64> = if let Some(last) = record.last_completed_at {
-        let now_secs = Utc::now().timestamp_millis();
-        Some(((now_secs / 1000) - last) as f64 / SECS_IN_DAY as f64)
+        let now_secs = Utc::now().timestamp();
+        Some((now_secs - last) as f64 / SECS_IN_DAY as f64)
     } else {
         None
     };
@@ -179,7 +225,9 @@ fn map_record_to_chore(record: &ChoreRow) -> Chore {
         chore_name: record.display_name.clone(),
         days_until_overdue,
         overdue,
-        last_completed_at: record.last_completed_at.map(|v| v as u64),
+        on_cadence: record.on_cadence == 1,
+        freq_secs: record.frequency_hours.map(|v| v * 60 * 60),
+        last_completed_at: record.last_completed_at,
     }
 }
 
