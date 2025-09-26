@@ -54,7 +54,7 @@ function App() {
         <button className="chore" onClick={() => markChore(chore)}>
           <div className="chore-card">
             <div className="chore-name">{chore.chore_name}</div>
-            <div className="days-left">{chore.days_until_overdue ? `Due in ${chore.days_until_overdue.toFixed(2)} days` : 'No deadline'}</div>
+            <div className="days-left">{chore.days_until_overdue ? `${chore.days_until_overdue.toFixed(2)} days` : 'No deadline'}</div>
           </div>
         </button>
       )}
