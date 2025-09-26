@@ -50,7 +50,7 @@ function App() {
         </button>
       )}
       <h2>Upcoming</h2>
-      {chores.filter((chore) => !chore.overdue).map((chore) =>
+      {chores.sort((a, b) => (a.days_until_overdue || Infinity) - (b.days_until_overdue || Infinity)).filter((chore) => !chore.overdue).map((chore) =>
         <button className="chore" onClick={() => markChore(chore)}>
           <div className="chore-card">
             <div className="chore-name">{chore.chore_name}</div>
