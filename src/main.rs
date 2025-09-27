@@ -117,7 +117,7 @@ async fn toggle_chore_handler(
         .execute(&state.pool)
         .await?;
     } else {
-        let last_completed_at: Option<i64> = if chore.on_cadence {
+        let last_completed_at: i64 = if chore.on_cadence {
             let freq_secs = chore
                 .freq_secs
                 .expect("A chore on a cadence must have a frequency");
@@ -131,9 +131,9 @@ async fn toggle_chore_handler(
             while new_last_completed_at > now - freq_secs {
                 new_last_completed_at -= freq_secs
             }
-            Some(new_last_completed_at)
+            new_last_completed_at
         } else {
-            None
+            Utc::now().timestamp()
         };
         // if not overdue, null or revert completed_at so it's overdue
         sqlx::query!(
@@ -211,7 +211,7 @@ fn map_record_to_chore(record: &ChoreRow) -> Chore {
         false
     };
 
-    let overdue = record.last_completed_at.is_none() || overdue_by_freq;
+    let overdue = overdue_by_freq;
 
     let days_until_overdue =
         if let (Some(days), Some(freq)) = (days_since_last_complete, freq_in_days) {

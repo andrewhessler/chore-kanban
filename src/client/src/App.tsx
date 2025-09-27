@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 
+const SECS_IN_DAY = 60 * 60 * 24;
+
 type Chore = {
   id: number,
   chore_name: string,
-  frequency: number | null,
+  freq_secs: number | null,
   last_completed_at: number | null,
   overdue: boolean;
   days_until_overdue: number | null;
@@ -50,11 +52,20 @@ function App() {
         </button>
       )}
       <h2>Upcoming</h2>
-      {chores.sort((a, b) => (a.days_until_overdue || Infinity) - (b.days_until_overdue || Infinity)).filter((chore) => !chore.overdue).map((chore) =>
+      {chores.filter((chore) => !chore.overdue && chore.days_until_overdue).sort((a, b) => a.days_until_overdue! - b.days_until_overdue!).map((chore) =>
         <button className="chore" onClick={() => markChore(chore)}>
           <div className="chore-card">
             <div className="chore-name">{chore.chore_name}</div>
-            <div className="days-left">{chore.days_until_overdue ? `${chore.days_until_overdue.toFixed(2)} days` : 'No deadline'}</div>
+            <div className="days-left">{`${chore.days_until_overdue!.toFixed(2)} days`}</div>
+          </div>
+        </button>
+      )}
+      <h2>Ad Hoc</h2>
+      {chores.filter((chore) => !chore.freq_secs && chore.last_completed_at).map((chore) =>
+        <button className="chore" onClick={() => markChore(chore)}>
+          <div className="chore-card">
+            <div className="chore-name">{chore.chore_name}</div>
+            <div className="days-left">{`${((Date.now() / 1000 - chore.last_completed_at!) / SECS_IN_DAY).toFixed(2)} days ago`}</div>
           </div>
         </button>
       )}
