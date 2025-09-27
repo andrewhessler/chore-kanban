@@ -56,7 +56,7 @@ function App() {
         <button className="chore" onClick={() => markChore(chore)}>
           <div className="chore-card">
             <div className="chore-name">{chore.chore_name}</div>
-            <div className="days-left">{`${chore.days_until_overdue!.toFixed(2)} days`}</div>
+            <div className="days-left">{`in ${chore.days_until_overdue!.toFixed(0)} days`}</div>
           </div>
         </button>
       )}
@@ -65,7 +65,7 @@ function App() {
         <button className="chore" onClick={() => markChore(chore)}>
           <div className="chore-card">
             <div className="chore-name">{chore.chore_name}</div>
-            <div className="days-left">{`${((Date.now() / 1000 - chore.last_completed_at!) / SECS_IN_DAY).toFixed(2)} days ago`}</div>
+            <div className="days-left">{`${((Date.now() / 1000 - chore.last_completed_at!) / SECS_IN_DAY).toFixed(0)} days ago`}</div>
           </div>
         </button>
       )}
