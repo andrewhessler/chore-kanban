@@ -43,7 +43,7 @@ function App() {
 
   return (
     <div id="chores">
-      <h2>Overdue</h2>
+      <h2>Due</h2>
       {chores.filter((chore) => chore.overdue).map((chore) =>
         <button className="chore" onClick={() => markChore(chore)}>
           <div className="chore-card">
