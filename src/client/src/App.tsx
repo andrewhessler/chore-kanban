@@ -51,21 +51,21 @@ function App() {
           </div>
         </button>
       )}
-      <h2>Upcoming</h2>
-      {chores.filter((chore) => !chore.overdue && chore.days_until_overdue).sort((a, b) => a.days_until_overdue! - b.days_until_overdue!).map((chore) =>
-        <button className="chore" onClick={() => markChore(chore)}>
-          <div className="chore-card">
-            <div className="chore-name">{chore.chore_name}</div>
-            <div className="days-left">{`in ${chore.days_until_overdue!.toFixed(0)} days`}</div>
-          </div>
-        </button>
-      )}
       <h2>Ad Hoc</h2>
       {chores.filter((chore) => !chore.freq_secs && chore.last_completed_at).map((chore) =>
         <button className="chore" onClick={() => markChore(chore)}>
           <div className="chore-card">
             <div className="chore-name">{chore.chore_name}</div>
             <div className="days-left">{`${((Date.now() / 1000 - chore.last_completed_at!) / SECS_IN_DAY).toFixed(0)} days ago`}</div>
+          </div>
+        </button>
+      )}
+      <h2>Upcoming</h2>
+      {chores.filter((chore) => !chore.overdue && chore.days_until_overdue).sort((a, b) => a.days_until_overdue! - b.days_until_overdue!).map((chore) =>
+        <button className="chore" onClick={() => markChore(chore)}>
+          <div className="chore-card">
+            <div className="chore-name">{chore.chore_name}</div>
+            <div className="days-left">{`in ${chore.days_until_overdue!.toFixed(0)} days`}</div>
           </div>
         </button>
       )}
