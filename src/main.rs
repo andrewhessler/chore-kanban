@@ -89,6 +89,33 @@ async fn toggle_chore_handler(
     let chore = get_chore_by_id(&id, &state.pool).await?;
     let now = Utc::now().timestamp();
 
+    // If frequency doesn't exist, we set it to overdue by giving it a tiny frequency
+    // If frequency is the short circuit frequency (1 hour = 60 * 60 seconds), clear frequency and
+    // set last_completed_at
+    if chore.freq_secs.is_none() {
+        sqlx::query!(
+            r"
+            UPDATE chores SET frequency_hours = ?1 WHERE id = ?2
+            ",
+            1,
+            id
+        )
+        .execute(&state.pool)
+        .await?;
+    } else if chore.freq_secs.unwrap_or(0) == 60 * 60 {
+        // else if is silly but they're connected!
+        let two_hour_ago = now - (24 * 60 * 60);
+        sqlx::query!(
+            r"
+            UPDATE chores SET last_completed_at = ?1, frequency_hours = NULL WHERE id = ?2
+            ",
+            two_hour_ago,
+            id
+        )
+        .execute(&state.pool)
+        .await?;
+    }
+
     if chore.overdue {
         let last_completed_at = if chore.on_cadence {
             let freq_secs = chore
@@ -133,7 +160,7 @@ async fn toggle_chore_handler(
             }
             new_last_completed_at
         } else {
-            Utc::now().timestamp()
+            now
         };
         // if not overdue, null or revert completed_at so it's overdue
         sqlx::query!(
@@ -211,7 +238,9 @@ fn map_record_to_chore(record: &ChoreRow) -> Chore {
         false
     };
 
-    let overdue = overdue_by_freq;
+    let overdue_by_freq_short_circuit = record.frequency_hours.unwrap_or(0) == 1;
+
+    let overdue = overdue_by_freq || overdue_by_freq_short_circuit;
 
     let days_until_overdue =
         if let (Some(days), Some(freq)) = (days_since_last_complete, freq_in_days) {
