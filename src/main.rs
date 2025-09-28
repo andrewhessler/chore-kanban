@@ -104,12 +104,11 @@ async fn toggle_chore_handler(
         .await?;
     } else if chore.freq_secs.unwrap_or(0) == 60 * 60 {
         // else if is silly but they're connected!
-        let two_hour_ago = now - (24 * 60 * 60);
         sqlx::query!(
             r"
             UPDATE chores SET last_completed_at = ?1, frequency_hours = NULL WHERE id = ?2
             ",
-            two_hour_ago,
+            now,
             id
         )
         .execute(&state.pool)
